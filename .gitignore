@@ -1,0 +1,7 @@
+*.fs
+*.tmp
+*.lock
+*.index
+.env
+*.log
+*.pyc
