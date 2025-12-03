@@ -57,6 +57,54 @@ async def on_ready():
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     print('------')
 
+# Set admin role (Administrator only, hidden from general users)
+@bot.tree.command(name="set_admin_role")
+@app_commands.default_permissions(administrator=True)
+async def set_admin_role(interaction, role: discord.Role):
+    response_parts = []
+
+    # Check permissions first
+    if not interaction.user.guild_permissions.administrator:
+        response_parts.append("❌ **Permission Denied**: You must have Administrator permission to set the admin role.")
+    else:
+        try:
+            # Get the current admin role before setting the new one
+            with con_room_manager.db.transaction() as conn:
+                old_admin_role_id = con_room_manager.get_admin_role_id(interaction.guild.id, conn)
+
+            old_role = None
+            if old_admin_role_id:
+                old_role = interaction.guild.get_role(old_admin_role_id)
+
+            # Set the new admin role
+            await con_room_manager.set_admin_role(interaction, role)
+
+            # Success message
+            if old_role:
+                response_parts.append(f"✅ **Success**: Admin role updated from `{old_role.name}` to `{role.name}`.")
+            else:
+                response_parts.append(f"✅ **Success**: Admin role set to `{role.name}`.")
+        except Exception as e:
+            response_parts.append(f"❌ **Error**: {str(e)}")
+
+    # Always show current admin role configuration
+    try:
+        with con_room_manager.db.transaction() as conn:
+            current_admin_role_id = con_room_manager.get_admin_role_id(interaction.guild.id, conn)
+
+        if current_admin_role_id:
+            current_role = interaction.guild.get_role(current_admin_role_id)
+            if current_role:
+                response_parts.append(f"\n📋 **Current Admin Role**: {current_role.mention} (`{current_role.name}`)")
+            else:
+                response_parts.append(f"\n⚠️ **Current Admin Role**: Role ID `{current_admin_role_id}` (role not found)")
+        else:
+            response_parts.append("\n📋 **Current Admin Role**: None set")
+    except Exception as e:
+        response_parts.append(f"\n⚠️ Could not retrieve current admin role: {str(e)}")
+
+    await follow_up(interaction, "\n".join(response_parts), ephemeral=True)
+
 # Set room channel
 @bot.tree.command(name="set_room_channel")
 async def set_room_channel(interaction):
@@ -72,9 +120,9 @@ async def set_room_channel(interaction):
 
 # Create room
 @bot.tree.command(name="create_room")
-async def create_room(interaction, hotel: str, room_number: int):
+async def create_room(interaction, hotel: str, room_number: int, room_name: str = None):
     try:
-        await con_room_manager.create_room(interaction, interaction.user, hotel, room_number)
+        await con_room_manager.create_room(interaction, interaction.user, hotel, room_number, room_name)
     except Exception as e:
         await follow_up(interaction, str(e), ephemeral=True)
     
@@ -86,11 +134,46 @@ async def add_person_to_room(interaction, person: discord.Member, hotel: str = N
     except Exception as e:
         await follow_up(interaction, str(e), ephemeral=True)
 
+# Autocomplete function for room names
+async def room_name_autocomplete(interaction: discord.Interaction, current: str):
+    try:
+        with con_room_manager.db.transaction() as conn:
+            # Get all rooms where the user is a member
+            user_rooms = [room for room in conn.root.rooms.values() if room.person_in_room(interaction.user) and room.room_name]
+            # Filter by current input and return up to 25 choices
+            choices = [
+                app_commands.Choice(name=room.room_name, value=room.room_name)
+                for room in user_rooms
+                if current.lower() in room.room_name.lower()
+            ][:25]
+            return choices
+    except Exception:
+        return []
+
 # Update room status
 @bot.tree.command(name="update_room_status")
-async def update_room_status(interaction, status: RoomStatus, vibe: RoomVibe, hotel: str = None, room_number: int = None):
+@app_commands.autocomplete(room_name=room_name_autocomplete)
+async def update_room_status(interaction, status: RoomStatus, vibe: RoomVibe, room_name: str = None, hotel: str = None, room_number: int = None):
     try:
-        await con_room_manager.update_room_status(interaction, status, vibe, hotel, room_number)
+        await con_room_manager.update_room_status(interaction, status, vibe, room_name, hotel, room_number)
+    except Exception as e:
+        await follow_up(interaction, str(e), ephemeral=True)
+
+# Update room info (Admin only)
+@bot.tree.command(name="update_room_info")
+@app_commands.default_permissions(administrator=True)
+async def update_room_info(interaction, old_hotel: str, old_room_number: int, new_hotel: str = None, new_room_number: int = None, new_room_name: str = None):
+    try:
+        await con_room_manager.update_room_info(interaction, old_hotel, old_room_number, new_hotel, new_room_number, new_room_name)
+        changes = []
+        if new_hotel:
+            changes.append(f"hotel to '{new_hotel}'")
+        if new_room_number:
+            changes.append(f"room number to '{new_room_number}'")
+        if new_room_name:
+            changes.append(f"room name to '{new_room_name}'")
+        changes_text = ", ".join(changes) if changes else "no changes"
+        await follow_up(interaction, f"Room updated successfully. Changed: {changes_text}.", ephemeral=True)
     except Exception as e:
         await follow_up(interaction, str(e), ephemeral=True)
 
